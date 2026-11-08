@@ -4248,6 +4248,9 @@ class AgentBase(ABC):
         self._watchers: list[
             Callable[[AgentBase, SessionBase | None, Event], None]
         ] = []
+        self._critical_watchers: list[
+            Callable[[AgentBase, SessionBase | None, Event], None]
+        ] = []
         #: What is hung on this agent's moments, which a flow adds to and takes from while
         #: the agent is running: the hooks are the flow's own callables rather than a table
         #: the backend read out of a settings file before anything started.
@@ -6158,7 +6161,10 @@ class AgentBase(ABC):
             through.stop()
 
     def watch(
-        self, listener: Callable[[AgentBase, SessionBase | None, Event], None]
+        self,
+        listener: Callable[[AgentBase, SessionBase | None, Event], None],
+        *,
+        critical: bool = False,
     ) -> None:
         """Has everything this agent's turns say reach `listener` as they say it.
 
@@ -6166,9 +6172,13 @@ class AgentBase(ABC):
           listener: What to tell, as this agent, the conversation that said it, and the thing
             said. The conversation is None for something the agent said rather than one of
             them -- a question put by a server that serves every session of it at once.
+          critical: Whether a failure must interrupt the turn instead of being swallowed.
+            Reserved for trusted external observers; ordinary display watchers stay isolated.
         """
         with self._holding:
             self._watchers.append(listener)
+            if critical:
+                self._critical_watchers.append(listener)
 
     @property
     def watched(self) -> bool:
@@ -6241,7 +6251,7 @@ class AgentBase(ABC):
     def _heard(self, event: Event, session: SessionBase | None = None) -> None:
         """Tells everyone watching what a turn of this agent just said.
 
-        A watcher that raises is a watcher's own problem: a flow must not fail because
+        An ordinary watcher that raises is a watcher's own problem: a flow must not fail because
         something looking at it did. Told from a copy of the list rather than from the list,
         since a turn saying something is a turn on some other thread than the one hanging a
         watcher on the agent.
@@ -6264,7 +6274,11 @@ class AgentBase(ABC):
             return
         with self._holding:
             watching = tuple(self._watchers)
+            critical = tuple(self._critical_watchers)
         for listener in watching:
+            if listener in critical:
+                listener(self, session, event)
+                continue
             try:
                 listener(self, session, event)
             except Exception:  # noqa: BLE001, S112 -- a watcher fails on its own account

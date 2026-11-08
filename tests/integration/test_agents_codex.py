@@ -32,6 +32,7 @@ from hmz.coganchor.faking import FakeCli, FakeCommand
 from hmz.coganchor.fence import ALL, READ, Fence
 from hmz.coganchor.gateway import gatewayable
 from hmz.coganchor.providers import Provider
+from hmz.runtime.trajectory import Trajectory
 from tests.integration.doubles_agents import (
     CODEX,
     Endpoint,
@@ -69,7 +70,7 @@ def test_a_turn_says_what_it_did_and_what_it_spent(codex: Standins) -> None:
 
     said = list(session.stream("hello"))
 
-    assert kinds(said) == ["tool", "reasoning", "text", "result"]
+    assert kinds(said) == ["tool", "tool-result", "reasoning", "text", "result"]
     assert "echo hello" in said[0].text
     assert said[-1].text == "hello"
     assert dict(said[-1].tokens) == {"gpt-stand-in": 17}
@@ -79,6 +80,25 @@ def test_a_turn_says_what_it_did_and_what_it_spent(codex: Standins) -> None:
     assert launch.env["HMZ_TEST_INHERITED"] == "from-the-flow"
     (opened,) = _told(codex, "thread/start")
     assert opened["model"] == "gpt-stand-in"
+
+
+def test_native_tool_notifications_are_retained_in_a_durable_trajectory(
+    codex: Standins, tmp_path: Path
+) -> None:
+    journal = tmp_path / "trajectory.jsonl"
+    trajectory = Trajectory(journal)
+    agent = CodexAgent(CONFIG)
+    agent.watch(trajectory.event, critical=True)
+
+    assert agent.new()("hello") == "hello"
+    trajectory.finish()
+
+    rows = [json.loads(line) for line in journal.read_text().splitlines()]
+    tools = [row["tool"] for row in rows if row.get("tool")]
+    assert [tool["phase"] for tool in tools] == ["started", "completed"]
+    assert tools[0]["native"]["params"]["item"]["command"] == "echo hello"
+    assert tools[1]["native"]["params"]["item"]["exitCode"] == 0
+    assert rows[-1]["status"] == "complete"
 
 
 def test_a_run_keeps_its_threads_where_no_supervisor_answers_their_paths(

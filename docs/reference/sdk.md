@@ -8,6 +8,53 @@ import '../.vitepress/theme/components/ref-cli/ref.css'
 
 # SDK reference
 
+## Fork extensions: offline agents and complete trajectories
+
+The trusted run owner can require offline agents and retain complete emitted evidence:
+
+```python
+run = Hmz(workspace).run(flow, task, agents=agents)
+run.offline()
+run.record_trajectory("/trusted/run-001/trajectory.jsonl")
+result = run.run()
+```
+
+Call both before starting. `offline()` permanently clamps every driver's effective
+permission to `online=NONE`, including new sessions, forks, moves and hook reconfiguration.
+It uses the existing process-tree fence: Linux Landlock/seccomp and a host-allowlist proxy,
+or macOS Seatbelt. Codex's native web search and connected apps are also disabled. Drivers
+that cannot implement the policy and platforms that cannot enforce it are refused;
+permissions are never silently widened.
+Cutting the network on Linux requires Landlock ABI 4 (kernel 6.7 or newer), available
+through the container's seccomp policy. An older host remains unsupported even when an
+outer container has its own network disabled; this API does not infer or attest that wall.
+
+The fence still permits model/sign-in hosts, so an API proxy should restrict requests to
+model inference and reject server-side search or remote URL inputs. Use a clean harness
+home, expose no privileged Unix sockets and run the trusted controller in a networkless
+container with a narrowly scoped model broker. Flow Python and flow-provided callbacks
+are trusted controller code, outside the agent's fence. Arbitrary untrusted flows are not
+a supported security boundary.
+
+Attach `record_trajectory` once. Its exclusive, mode-0600 JSONL journal preserves every
+emitted event, including prompts submitted through the session, reported reasoning/text,
+complete tool arguments/results and usage. A tool carries `name`, `id`, `phase` and the
+full native notification under `native` (`method`, `params`), without display truncation.
+Both ends are recorded; some Codex items are emitted only as completed. Local session
+IDs exist before backend thread IDs. Records are fsynced and linked by SHA-256.
+
+Missing structured tool evidence, unfinished calls, journal failures or incomplete native
+child coverage cancel the whole run and raise `hmz.runtime.trajectory.TrajectoryError`.
+Ordinary display watchers stay isolated; this observer uses a critical watcher and root
+cancellation. Only Codex is currently accepted. Native subagents are refused because child
+tool streams are not completely observable; separate flow sessions are covered. Unknown
+Codex item kinds retain their complete native payload.
+
+This records evidence rather than classifying tools. It does not reconstruct reasoning
+the backend never reports. Hashes alone cannot protect an agent-writable journal: keep
+the launcher, logs and broker secrets outside optimizer-writable filesystems, and archive
+native session files alongside the journal for inspection.
+
 `hmz.sdk`: the supported import path for programs that drive Humanize. It defines nothing of
 its own but `Daemons`; every other name is the object the runtime or the daemon layer holds,
 handed through unchanged. Notation: [Conventions](/reference/#conventions).

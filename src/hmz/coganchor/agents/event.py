@@ -13,7 +13,7 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import PurePath
-from typing import IO, TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -338,6 +338,9 @@ class Event:
       spent: The same cost, by the kind of token it went on rather than by model -- what a
         rate is read off. Only a `result` carries it, and its `total` is what `tokens` comes
         to: the two are the same spending counted two ways.
+      tool: Structured tool evidence, when the backend supplies it. Codex includes the
+        complete native item notification, with no display truncation, at both ends of a
+        call. Its completion is a `tool-result`, so it does not fire PRE_TOOL_USE twice.
     """
 
     kind: str
@@ -345,6 +348,7 @@ class Event:
     whose: str = ""
     tokens: Mapping[str, int] = field(default_factory=dict[str, int])
     spent: Usage = field(default_factory=Usage)
+    tool: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

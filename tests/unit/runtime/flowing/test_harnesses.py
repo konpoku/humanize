@@ -38,6 +38,7 @@ from hmz.flows import (
     OutworlderAway,
     Permission,
     PermissionKind,
+    PermissionRequestHookResult,
     SessionError,
     SessionStartHookResult,
     StopHookResult,
@@ -189,6 +190,7 @@ class CLI:
         self.ask: Any = None
         self.loaded: list[Any] = []
         self.watched: list[Any] = []
+        self.critical_watched: list[Any] = []
         self.conversations: list[Conversation] = []
         self.recalled: list[tuple[str, Path, str | None]] = []
         self.kept: list[tuple[str, Path]] = []
@@ -198,8 +200,10 @@ class CLI:
     def loads(self, skills: Any) -> None:
         self.loaded.extend(skills)
 
-    def watch(self, listener: Any) -> None:
+    def watch(self, listener: Any, *, critical: bool = False) -> None:
         self.watched.append(listener)
+        if critical:
+            self.critical_watched.append(listener)
 
     def new(self, cwd: str | None) -> Conversation:
         conversation = Conversation(self, cwd)
@@ -335,6 +339,45 @@ def test_a_cli_nobody_added_is_not_installed(coganchor: type[CLI]) -> None:
 def test_a_model_the_cli_cannot_run_is_unrecoverable(coganchor: type[CLI]) -> None:
     with pytest.raises(HarnessUnrecoverable, match="no such model"):
         open_agent(_spec(model="refused"))
+
+
+def test_run_offline_ceiling_survives_session_and_hook_configuration(
+    coganchor: type[CLI], tmp_path: Path
+) -> None:
+    async def exercise() -> None:
+        driver = open_agent(_spec(HarnessKind.CODEX))
+        driver.offline()
+
+        def required(*_: object) -> None:
+            pass
+
+        driver.watch_critical(required)
+        assert driver.permission(Permission()).online is PermissionKind.NONE
+        hooks = HookTable()
+        session = await _session(driver, tmp_path, hooks)
+        agent = _cli(session)
+        assert agent.config.web_search is False
+        assert agent.critical_watched == [required]
+
+        async def gate(
+            handle: SessionHandle, fields: dict[str, Any]
+        ) -> PermissionRequestHookResult:
+            del handle, fields
+            return PermissionRequestHookResult()
+
+        hooks.set(HookKind.PERMISSION_REQUEST, gate)
+        await session.turn(TurnRequest("first"), Sink())
+        assert agent.config.web_search is False
+        other = tmp_path / "other"
+        other.mkdir()
+        await session.move(_placed(other))
+        assert _cli(session).config.web_search is False
+        assert _cli(session).critical_watched == [required]
+        with pytest.raises(RuntimeError, match="before opening sessions"):
+            driver.offline()
+        await session.close()
+
+    asyncio.run(exercise())
 
 
 async def test_a_session_opens_in_its_workdir_with_its_skills(
