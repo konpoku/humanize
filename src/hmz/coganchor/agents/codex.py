@@ -1223,6 +1223,12 @@ class _AppServer:
         # taken for one already seen.
         marked = item.get("id")
         twice = done and marked is not None and marked in started
+        tool = {
+            "name": kind,
+            "id": str(marked or ""),
+            "phase": "completed" if done else "started",
+            "native": {"method": method, "params": dict(told)},
+        }
         if marked is not None:
             started.add(marked)
         if kind == "userMessage" and not done and took:
@@ -1250,8 +1256,9 @@ class _AppServer:
                 kind="subagent-ends" if done else "subagent",
                 text=f"{_CALLED.get(kind, kind)} {about}".strip()[:120],
                 whose=str(marked or ""),
+                tool=tool,
             )
-        elif kind not in (*_TALKING, *_OURS) and not twice:
+        elif kind not in (*_TALKING, *_OURS):
             # Every other item is the agent reaching for something, and every
             # one of them is shown: a turn spends its minutes here, and an
             # item this has never heard of is still work being done rather
@@ -1275,8 +1282,9 @@ class _AppServer:
                 "",
             )
             yield Event(
-                kind="tool",
+                kind="tool-result" if twice else "tool",
                 text=f"{_CALLED.get(kind, kind)} {about}".strip()[:120],
+                tool=tool,
             )
 
     def turn(self, params: dict[str, Any], running: _Running) -> Iterator[Event]:

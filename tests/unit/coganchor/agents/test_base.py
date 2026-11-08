@@ -193,6 +193,20 @@ def test_a_watcher_that_raises_fails_nothing_and_the_next_watcher_still_hears() 
     assert heard.count("result") == 2
 
 
+def test_a_critical_external_observer_failure_interrupts_the_turn() -> None:
+    agent = Scripted(
+        script=_said(Event("tool", "WebSearch papers"), Event("result", "done"))
+    )
+
+    def refuse(_agent: AgentBase, _session: SessionBase | None, event: Event) -> None:
+        if event.kind == "tool":
+            raise RuntimeError("required tool evidence is missing")
+
+    agent.watch(refuse, critical=True)
+    with pytest.raises(RuntimeError, match="required tool evidence is missing"):
+        agent("one")
+
+
 def test_a_stream_yields_what_the_agent_said_ending_on_the_result() -> None:
     agent = Scripted(script=_said(Event("text", "a"), Event("result", "b")))
     assert _kinds(list(agent.new().stream("x"))) == [("text", "a"), ("result", "b")]

@@ -418,6 +418,49 @@ def test_no_web_search_is_said_as_disabled(
     assert 'web_search="disabled"' in _servers(spawner)[0].args
 
 
+def test_offline_fence_forces_native_search_and_apps_off(
+    spawner: Spawner, server: _Server, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fence, "enforceable", fenceable)
+    offline = Fence.of(
+        local=ALL,
+        user=ALL,
+        system=ALL,
+        online=False,
+        workdir=tmp_path,
+        home=tmp_path / "home",
+    )
+    _agent(fence=offline, web_search=True, features=(("apps", True),)).new(tmp_path)(
+        "hi"
+    )
+    proc = next(one for one in spawner.started if "app-server" in one.args)
+    assert 'web_search="disabled"' in proc.args
+    assert 'web_search="live"' not in proc.args
+    assert ["--disable", "apps"] in [
+        proc.args[index : index + 2] for index in range(len(proc.args))
+    ]
+    assert ["--enable", "apps"] not in [
+        proc.args[index : index + 2] for index in range(len(proc.args))
+    ]
+
+
+def test_an_unenforceable_offline_fence_never_starts_a_cli(
+    spawner: Spawner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fence, "enforceable", lambda **_: False)
+    offline = Fence.of(
+        local=ALL,
+        user=ALL,
+        system=ALL,
+        online=False,
+        workdir=tmp_path,
+        home=tmp_path / "home",
+    )
+    with pytest.raises(ValueError, match="cannot be held to its permission"):
+        _agent(fence=offline).new(tmp_path)("hi")
+    assert not spawner.started
+
+
 def test_goals_cannot_be_disabled_once_a_server_ran_with_them(
     spawner: Spawner, server: _Server, tmp_path: Path
 ) -> None:
@@ -491,6 +534,7 @@ def test_a_turn_says_what_the_agent_did_and_what_it_cost(
     assert [(one.kind, one.text, one.whose) for one in events[:-1]] == [
         ("reasoning", "thinking hard", ""),
         ("tool", "Bash ls -la", ""),
+        ("tool-result", "Bash ls -la", ""),
         ("tool", "Edit a.py b.py", ""),
         ("subagent", "Task explore", "s"),
         ("subagent-ends", "Task explore", "s"),
@@ -502,6 +546,40 @@ def test_a_turn_says_what_the_agent_did_and_what_it_cost(
     assert result.tokens == {"gpt-x": 150}
     assert dict(result.spent) == {"input": 120, "output": 30}
     assert session.spent().total == 150
+
+
+def test_tool_evidence_preserves_full_native_inputs_and_outputs(
+    spawner: Spawner, server: _Server, tmp_path: Path
+) -> None:
+    command = "python benchmark.py --input " + "x" * 300
+    output = "benchmark output\n" * 100
+    server.turns = [
+        _says(
+            {
+                "type": "commandExecution",
+                "id": "command-1",
+                "command": command,
+                "done": False,
+            },
+            {
+                "type": "commandExecution",
+                "id": "command-1",
+                "command": command,
+                "aggregatedOutput": output,
+                "exitCode": 0,
+            },
+            _message("finished"),
+        )
+    ]
+    events = list(_agent().new(tmp_path).stream("hi"))
+    started, completed = events[:2]
+    assert started.tool is not None
+    assert completed.tool is not None
+    assert started.tool["phase"] == "started"
+    assert completed.tool["phase"] == "completed"
+    assert started.tool["native"]["params"]["item"]["command"] == command
+    assert completed.tool["native"]["params"]["item"]["aggregatedOutput"] == output
+    assert completed.kind == "tool-result"
 
 
 def test_cached_input_is_counted_beside_the_input_not_inside_it(

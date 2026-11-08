@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from hmz.runtime.flowing.harnesses import Listener
     from hmz.runtime.flowing.spi import Placement
     from hmz.runtime.runner import Opened, Runner
+    from hmz.runtime.trajectory import Trajectory
 
 __all__ = ["Run"]
 
@@ -58,6 +59,8 @@ class Run:
         self._raised: BaseException | None = None
         self._result: Any = None
         self._lock = threading.Lock()
+        self._trajectory: Trajectory | None = None
+        self._trajectory_error: BaseException | None = None
 
     # ----------------------------------------------------------------------- what it is
 
@@ -164,6 +167,71 @@ class Run:
         """
         self._runner.watch(listener)
 
+    def record_trajectory(self, journal: str | Path) -> None:
+        """Retain full emitted evidence in a new, trusted JSONL journal.
+
+        Attach once before starting. All observed prompts, reasoning/text, tool
+        arguments/results and token usage are retained without display truncation.
+        Missing structured evidence, incomplete native child coverage or journal
+        failures cancel the whole run and raise ``TrajectoryError``. Only Codex is
+        supported. This records evidence; it does not classify tool use.
+
+        Args:
+          journal: A new path outside optimizer-writable filesystems.
+        """
+        from hmz.runtime.trajectory import Trajectory, TrajectoryError
+
+        if (
+            self._loop is not None
+            or self._thread is not None
+            or self._trajectory is not None
+        ):
+            raise RuntimeError(
+                "trajectory recording must be attached once, before starting"
+            )
+        observers = tuple(
+            getattr(driver, "watch_critical", None)
+            for driver in self._runner.agents.values()
+        )
+        if any(not callable(observer) for observer in observers):
+            raise TrajectoryError(
+                "an agent driver cannot provide mandatory tool evidence"
+            )
+        trajectory = self._trajectory = Trajectory(journal)
+
+        def observed(agent: AgentBase, session: SessionBase | None, event: Any) -> None:
+            try:
+                trajectory.event(agent, session, event)
+            except TrajectoryError as error:
+                self._trajectory_error = error
+                # Ordinary watchers deliberately swallow exceptions. Cancellation is
+                # scheduled explicitly and the failure is re-raised by the run owner.
+                self.stop()
+                raise
+
+        for observer in observers:
+            if callable(observer):
+                observer(observed)
+
+    def offline(self) -> None:
+        """Require every agent's process tree to use the existing offline fence.
+
+        Call before starting. Unsupported drivers or platforms are refused; this
+        never falls back to a wider permission. Model API hosts remain reachable
+        through the fence's proxy. A strict model-only broker and outer network
+        namespace provide additional isolation for a trusted workflow's controller.
+        """
+        if self._loop is not None or self._thread is not None:
+            raise RuntimeError("offline mode must be set before starting")
+        setters = tuple(
+            getattr(driver, "offline", None) for driver in self._runner.agents.values()
+        )
+        if any(not callable(setter) for setter in setters):
+            raise RuntimeError("an agent driver cannot enforce offline mode")
+        for setter in setters:
+            if callable(setter):
+                setter()
+
     def opened(self, callback: Opened) -> None:
         """Has each session the run opens told to `callback` as it opens.
 
@@ -210,14 +278,28 @@ class Run:
         if stopping:
             # Stopped before it began: nothing ran, and what it was given goes all the same.
             await self._runner.aclose()
+            if self._trajectory is not None:
+                self._trajectory.finish(aborted=True)
             raise asyncio.CancelledError
-        return await self._runner.arun(
-            self._task,
-            outworlder=self._outworlder,
-            opened=self._told,
-            started=self._began,
-            noticed=self._notices,
-        )
+        succeeded = False
+        try:
+            result = await self._runner.arun(
+                self._task,
+                outworlder=self._outworlder,
+                opened=self._told,
+                started=self._began,
+                noticed=self._notices,
+            )
+            succeeded = True
+            return result
+        finally:
+            if self._trajectory is not None:
+                try:
+                    self._trajectory.finish(aborted=not succeeded)
+                except Exception as error:  # noqa: BLE001 -- evidence failures override cancellation
+                    self._trajectory_error = self._trajectory_error or error
+            if self._trajectory_error is not None:
+                raise self._trajectory_error
 
     def _told(
         self,
@@ -226,6 +308,8 @@ class Run:
         session: SessionBase,
         where: Placement | None,
     ) -> None:
+        if self._trajectory is not None:
+            self._trajectory.opened(agent)
         for callback in tuple(self._opened):
             callback(role, agent, session, where)
 

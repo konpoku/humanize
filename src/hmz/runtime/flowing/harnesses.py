@@ -87,6 +87,7 @@ from hmz.flows import (
     HookKind,
     OutputTokensExceeded,
     OutworlderAway,
+    PermissionKind,
     PermissionRequestHookAgentMixin,
     ResourceUnmet,
     SessionError,
@@ -266,6 +267,7 @@ class HarnessDriver:
         "_capabilities",
         "_closed",
         "_config",
+        "_critical_listeners",
         "_fences",
         "_harbors",
         "_has",
@@ -273,6 +275,7 @@ class HarnessDriver:
         "_kind",
         "_listeners",
         "_name",
+        "_offline",
         "_profile",
         "_sessions",
         "_spec",
@@ -308,6 +311,8 @@ class HarnessDriver:
         self._harbors = harbors
         self._capabilities = HARNESS_CAPABILITIES[spec.harness]
         self._listeners: list[Listener] = []
+        self._critical_listeners: list[Listener] = []
+        self._offline = False
         self._sessions: set[HarnessSession] = set()
         self._closed = False
         self._installed = False
@@ -376,6 +381,28 @@ class HarnessDriver:
         """
         self._listeners.append(listener)
 
+    def watch_critical(self, listener: Listener) -> None:
+        """Observe every constructed agent, including agents rebuilt for a move.
+
+        A required observer's exceptions fail the turn. The run owner must also
+        latch the failure and cancel the root, rather than let a flow ignore it.
+        """
+        self._critical_listeners.append(listener)
+
+    def offline(self) -> None:
+        """Permanently clamp this run's sessions to the offline permission."""
+        if self._sessions:
+            raise RuntimeError("offline mode must be set before opening sessions")
+        self._offline = True
+
+    def permission(self, permission: Permission) -> Permission:
+        """Apply the trusted run owner's ceiling before any session configuration."""
+        return (
+            dataclasses.replace(permission, online=PermissionKind.NONE)
+            if self._offline
+            else permission
+        )
+
     async def open(
         self,
         placement: Placement,
@@ -427,6 +454,7 @@ class HarnessDriver:
         """
         if self._closed:
             raise SessionError("the agent's driver is closed")
+        permission = self.permission(permission)
         parent = None
         if fork_of is not None:
             if not isinstance(fork_of, HarnessSession) or fork_of.driver is not self:
@@ -938,7 +966,7 @@ class HarnessDriver:
             self._config,
             self.harness,
             self._kind,
-            permission,
+            self.permission(permission),
             hung,
             tellable=self.tellable,
             machine=machine,
@@ -973,6 +1001,8 @@ class HarnessDriver:
         agent.loads(Loaded(name=one.name, at=one.at) for one in skills)
         for listener in self._listeners:
             agent.watch(listener)
+        for listener in self._critical_listeners:
+            agent.watch(listener, critical=True)
         try:
             if carry_on is not None:
                 held = agent.recall(carry_on.id, carry_on.at, cwd)
