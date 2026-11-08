@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from hmz.runtime.flowing.harnesses import Listener
     from hmz.runtime.flowing.spi import Placement
     from hmz.runtime.runner import Opened, Runner
-    from hmz.runtime.trajectory import Trajectory
+    from hmz.runtime.tracing.trajectory import Trajectory
 
 __all__ = ["Run"]
 
@@ -179,7 +179,7 @@ class Run:
         Args:
           journal: A new path outside optimizer-writable filesystems.
         """
-        from hmz.runtime.trajectory import Trajectory, TrajectoryError
+        from hmz.runtime.tracing.trajectory import Trajectory, TrajectoryError
 
         if (
             self._loop is not None
