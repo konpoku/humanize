@@ -447,7 +447,11 @@ def test_offline_fence_forces_native_search_and_apps_off(
 def test_an_unenforceable_offline_fence_never_starts_a_cli(
     spawner: Spawner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(fence, "enforceable", lambda **_: False)
+    def unenforceable(*, net: bool) -> bool:
+        del net
+        return False
+
+    monkeypatch.setattr(fence, "enforceable", unenforceable)
     offline = Fence.of(
         local=ALL,
         user=ALL,

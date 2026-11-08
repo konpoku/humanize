@@ -38,6 +38,7 @@ from hmz.flows import (
     OutworlderAway,
     Permission,
     PermissionKind,
+    PermissionRequestHookResult,
     SessionError,
     SessionStartHookResult,
     StopHookResult,
@@ -358,8 +359,11 @@ def test_run_offline_ceiling_survives_session_and_hook_configuration(
         assert agent.config.web_search is False
         assert agent.critical_watched == [required]
 
-        async def gate(handle: SessionHandle, fields: dict[str, Any]) -> None:
+        async def gate(
+            handle: SessionHandle, fields: dict[str, Any]
+        ) -> PermissionRequestHookResult:
             del handle, fields
+            return PermissionRequestHookResult()
 
         hooks.set(HookKind.PERMISSION_REQUEST, gate)
         await session.turn(TurnRequest("first"), Sink())
